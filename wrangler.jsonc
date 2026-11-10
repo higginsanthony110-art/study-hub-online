@@ -1,1 +1,20 @@
-
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "study-hub-helper",
+  "main": "worker.js",
+  "compatibility_date": "2026-11-10",
+  "workers_dev": true,
+  "ai": {
+    "binding": "AI"
+  },
+  "ratelimits": [
+    {
+      "name": "RATE_LIMITER",
+      "namespace_id": "20261110",
+      "simple": {
+        "limit": 5,
+        "period": 60
+      }
+    }
+  ]
+}
