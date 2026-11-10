@@ -2,7 +2,7 @@
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
 function jsonResponse(data, status = 200) {
@@ -11,6 +11,7 @@ function jsonResponse(data, status = 200) {
     headers: {
       ...corsHeaders,
       "Content-Type": "application/json",
+      "Cache-Control": "no-store",
     },
   });
 }
@@ -24,7 +25,9 @@ export default {
     }
 
     if (url.pathname === "/") {
-      return jsonResponse({ message: "Study Hub Worker is running." });
+      return jsonResponse({
+        message: "Study Hub Worker is running."
+      });
     }
 
     if (url.pathname !== "/ask") {
@@ -32,26 +35,54 @@ export default {
     }
 
     if (request.method !== "POST") {
-      return jsonResponse({ error: "Use POST for this endpoint." }, 405);
+      return jsonResponse({
+        error: "Use POST for this endpoint."
+      }, 405);
     }
 
     try {
+      // Check rate limit before processing requests.
       const ip = request.headers.get("CF-Connecting-IP") || "unknown";
 
-      const { success } = await env.RATE_LIMITER.limit({
-        key: ip,
+      const rate = await env.RATE_LIMITER.limit({
+        key: ip
       });
 
-      if (!success) {
+      if (!rate.success) {
         return jsonResponse({
-          error: "Too many requests. Please wait a minute and try again."
+          error: "Too many requests. Please wait and try again."
         }, 429);
+      }
+
+      // Require a private secret configured in Cloudflare.
+      const authHeader = request.headers.get("Authorization");
+
+      if (
+        !env.STUDY_HUB_SECRET ||
+        authHeader !== `Bearer ${env.STUDY_HUB_SECRET}`
+      ) {
+        return jsonResponse({
+          error: "Unauthorized."
+        }, 401);
+      }
+
+      // Reject oversized requests.
+      const contentLength = Number(
+        request.headers.get("Content-Length") || 0
+      );
+
+      if (contentLength > 8000) {
+        return jsonResponse({
+          error: "Request is too large."
+        }, 413);
       }
 
       const rawBody = await request.text();
 
       if (rawBody.length > 8000) {
-        return jsonResponse({ error: "Request is too large." }, 413);
+        return jsonResponse({
+          error: "Request is too large."
+        }, 413);
       }
 
       let data;
@@ -59,12 +90,16 @@ export default {
       try {
         data = JSON.parse(rawBody);
       } catch {
-        return jsonResponse({ error: "Invalid JSON." }, 400);
+        return jsonResponse({
+          error: "Invalid JSON."
+        }, 400);
       }
 
       const subject = String(data.subject || "").trim();
       const topic = String(data.topic || "").trim();
-      const difficulty = String(data.difficulty || "medium").trim();
+      const difficulty = String(
+        data.difficulty || "medium"
+      ).trim().toLowerCase();
       const question = String(data.question || "").trim();
 
       if (!subject || !topic) {
@@ -78,19 +113,32 @@ export default {
         topic.length > 150 ||
         question.length > 2000
       ) {
-        return jsonResponse({ error: "One of the fields is too long." }, 400);
+        return jsonResponse({
+          error: "One of the fields is too long."
+        }, 400);
+      }
+
+      if (!["easy", "medium", "hard"].includes(difficulty)) {
+        return jsonResponse({
+          error: "Choose easy, medium, or hard difficulty."
+        }, 400);
       }
 
       const prompt = `
-You are Study Hub, a helpful educational assistant.
-Help a secondary-school student understand their studies.
-Explain clearly, step by step, and use simple examples.
-Do not invent facts. If unsure, say so.
+You are Study Hub, a helpful educational tutor.
+
+Help a secondary-school student learn.
+Explain concepts clearly and step by step.
+Use simple examples and check understanding.
+Be accurate and do not invent facts.
+If you are unsure, say so.
 
 Subject: ${subject}
 Topic: ${topic}
 Difficulty: ${difficulty}
-Student's question: ${question || "Explain this topic and give a short practice question."}
+Student question: ${
+  question || "Explain this topic and give one practice question."
+}
 `;
 
       const result = await env.AI.run(
@@ -111,9 +159,10 @@ Student's question: ${question || "Explain this topic and give a short practice 
       );
 
       return jsonResponse(result);
+
     } catch (error) {
       return jsonResponse({
-        error: "The study assistant could not complete that request. Please try again."
+        error: "Study Hub could not complete that request. Please try again."
       }, 500);
     }
   },
